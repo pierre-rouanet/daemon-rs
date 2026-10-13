@@ -1,0 +1,8 @@
+{
+  "type": "set_torque",
+  "on": false,
+  "ids": [
+    "stewart_0",
+    "body_yaw"
+  ]
+}

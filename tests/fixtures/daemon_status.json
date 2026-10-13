@@ -1,0 +1,22 @@
+{
+  "type": "daemon_status",
+  "robot_name": "reachy_mini",
+  "state": "running",
+  "wireless_version": true,
+  "desktop_app_daemon": false,
+  "simulation_enabled": false,
+  "mockup_sim_enabled": false,
+  "no_media": false,
+  "media_released": false,
+  "camera_specs_name": "wireless",
+  "backend_status": {
+    "ready": true,
+    "motor_control_mode": "enabled",
+    "last_alive": null,
+    "control_loop_stats": {},
+    "error": null
+  },
+  "error": null,
+  "wlan_ip": "192.168.1.42",
+  "version": "0.1.0"
+}

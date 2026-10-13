@@ -1,0 +1,9 @@
+{
+  "type": "set_full_target",
+  "head": null,
+  "antennas": [
+    -0.5,
+    0.5
+  ],
+  "body_yaw": null
+}

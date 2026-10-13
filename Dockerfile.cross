@@ -1,0 +1,42 @@
+FROM debian:trixie-slim
+
+# Match the reachy-mini-os dev packages (see pollen-robotics/reachy-mini-os).
+# `git` + `libnice-dev` are extras for building gst-plugin-webrtc below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential pkg-config \
+        git \
+        libgstreamer1.0-dev \
+        libgstreamer-plugins-base1.0-dev \
+        libgstreamer-plugins-bad1.0-dev \
+        libglib2.0-dev \
+        libssl-dev \
+        libnice-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build gst-plugin-webrtc 0.14.1 from gst-plugins-rs and install it as a
+# system-wide GStreamer plugin under /opt/gst-plugins-rs. Kept in its own
+# layer so changing the daemon's source doesn't trigger a rebuild — under
+# QEMU emulation this step takes 10–30 minutes.
+#
+# Output: /opt/gst-plugins-rs/lib/aarch64-linux-gnu/gstreamer-1.0/libgstrswebrtc.so
+# Extract from the image with:
+#   docker run --rm --platform linux/arm64 daemon-rs-cross:aarch64 \
+#       tar -C /opt -cf - gst-plugins-rs > gst-plugins-rs.tar
+RUN cargo install cargo-c \
+ && git clone --depth 1 --branch 0.14.1 \
+        https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git \
+        /tmp/gst-plugins-rs \
+ && cd /tmp/gst-plugins-rs \
+ && cargo cinstall -p gst-plugin-webrtc \
+        --prefix=/opt/gst-plugins-rs \
+        --release \
+ && rm -rf /tmp/gst-plugins-rs \
+           /root/.cargo/registry/cache \
+           /root/.cargo/registry/src \
+           /root/.cargo/git
+
+ENV GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/aarch64-linux-gnu/gstreamer-1.0

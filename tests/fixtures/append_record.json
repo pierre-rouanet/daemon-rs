@@ -1,0 +1,10 @@
+{
+  "type": "append_record",
+  "record": {
+    "position": [
+      1.0,
+      2.0
+    ],
+    "timestamp": 123.4
+  }
+}

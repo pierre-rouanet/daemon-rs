@@ -1,0 +1,42 @@
+#!/bin/sh
+# Cargo subcommand: runs `cargo` inside the arm64 Linux build container.
+# Usage: cargo pi build --release
+#        cargo pi check
+#        cargo pi clippy
+
+# When invoked as `cargo pi`, cargo passes "pi" as $1 — skip it.
+# When invoked directly (`./cargo-pi ...`), $1 is the real cargo subcommand.
+[ "$1" = "pi" ] && shift
+
+# Resolve symlinks to find the real script location
+SELF="$0"
+while [ -L "$SELF" ]; do
+    DIR="$(cd "$(dirname "$SELF")" && pwd)"
+    SELF="$(readlink "$SELF")"
+    case "$SELF" in /*) ;; *) SELF="$DIR/$SELF" ;; esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+IMAGE="daemon-rs-cross:aarch64"
+
+# Build the image if it doesn't exist
+if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+    echo "Building cross-compilation image..."
+    docker build --platform linux/arm64 \
+        -t "$IMAGE" \
+        -f "$SCRIPT_DIR/Dockerfile.cross" \
+        "$SCRIPT_DIR"
+fi
+
+# Mount the grandparent (`mini/`) so the sibling path-dep crates
+# (reachy-mini-motor-controller, reachy_mini_rust_kinematics) resolve
+# with the same relative layout as on the host. daemon-rs expects to
+# live at `<mount>/playground/daemon-rs/`.
+WORKSPACE="$(cd "$PWD/../.." && pwd)"
+REL_PWD="${PWD#"$WORKSPACE"/}"
+
+exec docker run --rm \
+    --platform linux/arm64 \
+    -v "$WORKSPACE":/work \
+    -w "/work/$REL_PWD" \
+    "$IMAGE" \
+    cargo "$@"

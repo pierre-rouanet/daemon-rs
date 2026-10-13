@@ -1,0 +1,1 @@
+../../../reachy_mini/js/reachy-mini.js

@@ -1,0 +1,41 @@
+[package]
+name = "daemon-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gstreamer = "0.25"
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+tower-http = { version = "0.6", features = ["cors"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+nalgebra = "0.32"
+reachy_mini_rust_kinematics = { path = "../../reachy_mini_rust_kinematics", default-features = false }
+reachy-mini-motor-controller = { path = "../../reachy-mini-motor-controller", default-features = false }
+reqwest = { version = "0.12", features = ["stream", "json"] }
+tokio-tungstenite = "0.25"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# BMI088 IMU driver uses Linux-only `i2cdev::linux`; pulled in only when
+# compiling for Linux targets (the Pi).
+[target.'cfg(target_os = "linux")'.dependencies]
+imu = { path = "../../gstreamer_data_capture/imu" }
+
+[lib]
+name = "daemon_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "daemon-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "motor_bench"
+path = "src/bin/motor_bench.rs"

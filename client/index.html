@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<!--
+  Test client for daemon-rs.
+
+  Two WebSocket connections to the same host:
+    ws://<host>:8443        WebRTC signalling (for webrtcsink)
+    ws://<host>:8080/ws/sdk  control API (commands + sensor state)
+
+  Open directly (file://) or serve the folder:
+      python3 -m http.server -d client 8000
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>daemon-rs test client</title>
+<script type="importmap">
+{ "imports": { "https://cdn.jsdelivr.net/npm/@huggingface/hub@0.15.2/+esm": "./hf-stub.js" } }
+</script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1.5rem; }
+  fieldset { margin: 0.6rem 0; padding: 0.6rem 0.8rem; border: 1px solid #ccc; border-radius: 4px; }
+  legend { padding: 0 0.4rem; color: #555; font-size: 0.9rem; }
+  label { display: inline-block; margin-right: 0.5rem; font-size: 0.9rem; }
+  input[type=text] { width: 14rem; padding: 0.3rem; }
+  input[type=range] { width: 16rem; vertical-align: middle; }
+  button { padding: 0.4rem 0.8rem; margin-right: 0.3rem; }
+  select { padding: 0.3rem; }
+  .row { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: flex-start; }
+  .col { flex: 1 1 20rem; min-width: 18rem; }
+  video { width: 100%; max-width: 720px; background: #000; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  #stats, #state { background: #f4f4f4; padding: 0.5rem 0.7rem;
+                   border-radius: 4px; white-space: pre-line; }
+  #log { background: #111; color: #ddd; padding: 0.7rem; height: 12rem;
+         overflow: auto; white-space: pre-wrap; border-radius: 4px; }
+  .err { color: #f77; }
+  .ok  { color: #7f7; }
+  .tx  { color: #7cf; }
+</style>
+</head>
+<body>
+<h1>daemon-rs test client</h1>
+
+<fieldset>
+  <legend>host</legend>
+  <label>preset
+    <select id="host-preset">
+      <option value="pierrezero.local" selected>pierrezero.local</option>
+      <option value="192.168.10.145">192.168.10.145</option>
+      <option value="192.168.10.156">192.168.10.156</option>
+      <option value="reachy-mini.local">reachy-mini.local</option>
+      <option value="localhost">localhost</option>
+      <option value="__custom__">custom…</option>
+    </select>
+  </label>
+  <label>host
+    <input id="host" type="text" value="pierrezero.local" />
+  </label>
+  <label>meta.name
+    <input id="meta-name" type="text" value="reachymini" style="width:10rem" />
+  </label>
+  <button id="connect">Connect</button>
+  <button id="disconnect" disabled>Disconnect</button>
+</fieldset>
+
+<div class="row">
+  <div class="col">
+    <fieldset>
+      <legend>video (ws://host:8443)</legend>
+      <video id="video" autoplay playsinline controls muted></video>
+      <div id="stats" class="mono">—</div>
+    </fieldset>
+  </div>
+
+  <div class="col">
+    <fieldset>
+      <legend>control (ws://host:8080/ws/sdk)</legend>
+
+      <div style="margin-bottom:0.6rem;">
+        <button id="wake-up"    disabled>Wake up</button>
+        <button id="goto-sleep" disabled>Goto sleep</button>
+        <button id="zero"       disabled title="set_full_target to identity head + zero antennas/body_yaw">Zero pose</button>
+      </div>
+
+      <div class="mono" style="margin-bottom:0.35rem;">
+        body_yaw
+        <input id="body-yaw" type="range" min="-3.14" max="3.14" step="0.01" value="0" disabled />
+        <span id="body-yaw-val">0.00</span>
+      </div>
+      <div class="mono" style="margin-bottom:0.35rem;">
+        antenna R
+        <input id="ant-r" type="range" min="-1.5" max="1.5" step="0.01" value="0" disabled />
+        <span id="ant-r-val">0.00</span>
+      </div>
+      <div class="mono" style="margin-bottom:0.7rem;">
+        antenna L
+        <input id="ant-l" type="range" min="-1.5" max="1.5" step="0.01" value="0" disabled />
+        <span id="ant-l-val">0.00</span>
+      </div>
+
+      <div class="mono" style="margin-bottom:0.35rem;">head pose (6-DOF → IK)</div>
+      <div id="head-pose" class="mono" style="margin-bottom:0.7rem;"></div>
+
+      <div class="mono" style="margin-bottom:0.35rem;">head_joints (6 direct)</div>
+      <div id="head-joints" class="mono" style="margin-bottom:0.7rem;"></div>
+
+      <div id="state" class="mono">—</div>
+    </fieldset>
+  </div>
+</div>
+
+<fieldset>
+  <legend>SDK compat (reachy-mini.js)</legend>
+  <div style="margin-bottom:0.6rem;">
+    <button id="sdk-get-state" disabled>get_state</button>
+    <button id="sdk-wake-up"   disabled>wake_up (REST)</button>
+    <button id="sdk-sleep"     disabled>goto_sleep (REST)</button>
+  </div>
+  <div class="mono" style="margin-bottom:0.35rem;">
+    head (degrees, SDK format: roll/pitch/yaw → rpyToMatrix → set_target)
+  </div>
+  <div class="mono" style="margin-bottom:0.35rem;">
+    roll   <input id="sdk-roll"  type="range" min="-30" max="30" step="0.5" value="0" disabled />
+    <span id="sdk-roll-val">0.0</span>
+  </div>
+  <div class="mono" style="margin-bottom:0.35rem;">
+    pitch  <input id="sdk-pitch" type="range" min="-30" max="30" step="0.5" value="0" disabled />
+    <span id="sdk-pitch-val">0.0</span>
+  </div>
+  <div class="mono" style="margin-bottom:0.35rem;">
+    yaw    <input id="sdk-yaw"   type="range" min="-30" max="30" step="0.5" value="0" disabled />
+    <span id="sdk-yaw-val">0.0</span>
+  </div>
+  <div class="mono" style="margin-bottom:0.35rem;">
+    ant R  <input id="sdk-ant-r" type="range" min="-45" max="45" step="1" value="0" disabled />
+    <span id="sdk-ant-r-val">0</span> deg
+  </div>
+  <div class="mono" style="margin-bottom:0.7rem;">
+    ant L  <input id="sdk-ant-l" type="range" min="-45" max="45" step="1" value="0" disabled />
+    <span id="sdk-ant-l-val">0</span> deg
+  </div>
+  <div style="margin-top:0.6rem; margin-bottom:0.6rem; border-top:1px solid #ccc; padding-top:0.6rem;">
+    <span class="mono">latency test (sinusoid on body_yaw)</span>
+    <button id="sin-start" disabled>Start</button>
+    <button id="sin-stop"  disabled>Stop</button>
+    <label class="mono" style="margin-left:0.5rem;">freq
+      <input id="sin-freq" type="number" min="0.1" max="5" step="0.1" value="0.5" style="width:4rem" /> Hz
+    </label>
+    <label class="mono" style="margin-left:0.5rem;">amp
+      <input id="sin-amp" type="number" min="0.05" max="1.5" step="0.05" value="0.3" style="width:4rem" /> rad
+    </label>
+  </div>
+  <div id="sdk-state" class="mono" style="background:#f4f4f4;padding:0.5rem 0.7rem;border-radius:4px;white-space:pre-line;">—</div>
+</fieldset>
+
+<fieldset>
+  <legend>log</legend>
+  <div id="log" class="mono"></div>
+</fieldset>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+
+function log(msg, cls = "") {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+window.log = log;
+
+// ---------- host preset dropdown ----------
+$("host-preset").onchange = (e) => {
+  const v = e.target.value;
+  if (v !== "__custom__") $("host").value = v;
+};
+
+// ---------- WebRTC video (ws://host:8443) ----------
+let ws = null, pc = null, sessionId = null, targetProducerId = null;
+let statsTimer = null, lastVideoStats = null;
+
+async function connectVideo(host, wantedName) {
+  const url = `ws://${host}:8443`;
+  ws = new WebSocket(url);
+  ws.onopen = () => log(`video WS open → ${url}`, "ok");
+  ws.onclose = (ev) => log(`video WS close (${ev.code})`);
+  ws.onerror = () => log(`video WS error`, "err");
+  ws.onmessage = (ev) => onSignal(JSON.parse(ev.data), wantedName);
+}
+
+function wsSend(obj) { ws.send(JSON.stringify(obj)); }
+
+async function onSignal(msg, wantedName) {
+  switch (msg.type) {
+    case "welcome":
+      wsSend({ type: "setPeerStatus", roles: ["listener"], meta: { name: "daemon-rs-test-client" } });
+      wsSend({ type: "list" });
+      break;
+    case "list": {
+      const producers = msg.producers ?? [];
+      const match = producers.find(p => (p.meta?.name ?? "") === wantedName);
+      if (!match) { log(`no producer with meta.name="${wantedName}"`, "err"); return; }
+      targetProducerId = match.id;
+      wsSend({ type: "startSession", peerId: targetProducerId });
+      break;
+    }
+    case "sessionStarted":
+      sessionId = msg.sessionId;
+      log(`video session ${sessionId}`, "ok");
+      setupPeerConnection();
+      break;
+    case "peer": await onPeerMessage(msg); break;
+    case "endSession": log("video session ended"); break;
+    case "error": log(`video signalling error: ${msg.details ?? JSON.stringify(msg)}`, "err"); break;
+  }
+}
+
+function setupPeerConnection() {
+  pc = new RTCPeerConnection({ iceServers: [] });
+  pc.ontrack = (ev) => {
+    log(`track ${ev.track.kind}`, "ok");
+    const video = $("video");
+    if (!video.srcObject) video.srcObject = new MediaStream();
+    video.srcObject.addTrack(ev.track);
+    if (ev.track.kind === "audio") video.muted = false;
+  };
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate && sessionId) wsSend({ type: "peer", sessionId, ice: ev.candidate.toJSON() });
+  };
+  pc.onconnectionstatechange = () => log(`pc state: ${pc.connectionState}`);
+  statsTimer = setInterval(() => updateStats().catch(() => {}), 1000);
+}
+
+async function onPeerMessage(msg) {
+  if (!pc) return;
+  if (msg.sdp) {
+    await pc.setRemoteDescription(msg.sdp);
+    if (msg.sdp.type === "offer") {
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      wsSend({ type: "peer", sessionId, sdp: { type: answer.type, sdp: answer.sdp } });
+    }
+  } else if (msg.ice) {
+    try { await pc.addIceCandidate(msg.ice); } catch (e) { log(`ice: ${e}`, "err"); }
+  }
+}
+
+async function updateStats() {
+  if (!pc) return;
+  const report = await pc.getStats();
+  let video = null, codec = null, nominated = null;
+  report.forEach((r) => {
+    if (r.type === "inbound-rtp" && r.kind === "video") video = r;
+    if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded") nominated = r;
+  });
+  if (video && video.codecId) codec = report.get(video.codecId);
+  if (!video) { $("stats").textContent = "no video stats yet"; return; }
+
+  let bitrate = "—", jbMs = "—", procMs = "—";
+  if (lastVideoStats && video.timestamp > lastVideoStats.timestamp) {
+    const dt = (video.timestamp - lastVideoStats.timestamp) / 1000;
+    bitrate = `${(((video.bytesReceived - lastVideoStats.bytesReceived) * 8) / dt / 1000).toFixed(0)} kb/s`;
+    const dJbN = video.jitterBufferEmittedCount - (lastVideoStats.jitterBufferEmittedCount ?? 0);
+    if (dJbN > 0) jbMs = `${(((video.jitterBufferDelay - (lastVideoStats.jitterBufferDelay ?? 0)) / dJbN) * 1000).toFixed(0)} ms`;
+    const dFr = (video.framesDecoded ?? 0) - (lastVideoStats.framesDecoded ?? 0);
+    if (dFr > 0) procMs = `${((((video.totalProcessingDelay ?? 0) - (lastVideoStats.totalProcessingDelay ?? 0)) / dFr) * 1000).toFixed(0)} ms`;
+  }
+  lastVideoStats = video;
+
+  const fps = video.framesPerSecond != null ? video.framesPerSecond.toFixed(1) : "—";
+  const jitter = video.jitter != null ? `${(video.jitter * 1000).toFixed(1)} ms` : "—";
+  const rtt = nominated?.currentRoundTripTime != null ? `${(nominated.currentRoundTripTime * 1000).toFixed(0)} ms` : "—";
+
+  $("stats").textContent =
+    `${video.frameWidth ?? "?"}×${video.frameHeight ?? "?"} @ ${fps} fps · ${codec?.mimeType ?? "?"} · ${bitrate} · lost ${video.packetsLost ?? 0}/${video.packetsReceived ?? 0}\n` +
+    `delay: rtt ${rtt} · jitter ${jitter} · jb ${jbMs} · decode ${procMs}`;
+}
+
+// ---------- control WS (ws://host:8080/ws/sdk) ----------
+let ctrlWs = null;
+let lastJoint = null, lastImu = null, lastDaemonStatus = null, lastFullState = null;
+let sensorMsgCount = 0;
+let lastSensorRate = { t: performance.now(), count: 0 };
+
+// 6-DOF head pose sliders: tx, ty, tz (metres), rx, ry, rz (radians).
+const HEAD_POSE_DEFS = [
+  { id: "hp-tx", label: "tx", min: -0.03, max: 0.03, step: 0.001 },
+  { id: "hp-ty", label: "ty", min: -0.03, max: 0.03, step: 0.001 },
+  { id: "hp-tz", label: "tz", min: -0.02, max: 0.02, step: 0.001 },
+  { id: "hp-rx", label: "rx", min: -0.3,  max: 0.3,  step: 0.005 },
+  { id: "hp-ry", label: "ry", min: -0.3,  max: 0.3,  step: 0.005 },
+  { id: "hp-rz", label: "rz", min: -0.3,  max: 0.3,  step: 0.005 },
+];
+const HEAD_POSE_IDS = HEAD_POSE_DEFS.map(d => d.id);
+// 6 Stewart-platform joints; body_yaw is its own slider above.
+const HEAD_JOINT_IDS = Array.from({ length: 6 }, (_, i) => `hj-${i}`);
+const SDK_IDS = ["sdk-get-state", "sdk-wake-up", "sdk-sleep", "sdk-roll", "sdk-pitch", "sdk-yaw", "sdk-ant-r", "sdk-ant-l", "sin-start", "sin-stop"];
+const CTRL_IDS = ["wake-up", "goto-sleep", "zero", "body-yaw", "ant-r", "ant-l", ...HEAD_POSE_IDS, ...HEAD_JOINT_IDS, ...SDK_IDS];
+
+(function buildHeadPoseSliders() {
+  const parent = $("head-pose");
+  for (const d of HEAD_POSE_DEFS) {
+    const row = document.createElement("div");
+    row.style.marginBottom = "0.2rem";
+    row.innerHTML =
+      `${d.label} ` +
+      `<input id="${d.id}" type="range" min="${d.min}" max="${d.max}" step="${d.step}" value="0" disabled />` +
+      `<span id="${d.id}-val">0.000</span>`;
+    parent.appendChild(row);
+  }
+})();
+
+// Compose 6-DOF (tx,ty,tz,rx,ry,rz) into a row-major 4x4 matrix.
+// Rotation order: Rz * Ry * Rx (extrinsic XYZ / intrinsic ZYX).
+function poseToMatrix(tx, ty, tz, rx, ry, rz) {
+  const cx = Math.cos(rx), sx = Math.sin(rx);
+  const cy = Math.cos(ry), sy = Math.sin(ry);
+  const cz = Math.cos(rz), sz = Math.sin(rz);
+  return [
+    cy*cz,  cz*sx*sy - cx*sz,  sx*sz + cx*cz*sy, tx,
+    cy*sz,  cx*cz + sx*sy*sz,  cx*sy*sz - cz*sx, ty,
+    -sy,    cy*sx,             cx*cy,             tz,
+    0,      0,                 0,                 1,
+  ];
+}
+
+(function buildHeadJointSliders() {
+  const parent = $("head-joints");
+  for (let i = 0; i < 6; i++) {
+    const row = document.createElement("div");
+    row.style.marginBottom = "0.2rem";
+    row.innerHTML =
+      `j${i} ` +
+      `<input id="hj-${i}" type="range" min="-1.5" max="1.5" step="0.01" value="0" disabled />` +
+      `<span id="hj-${i}-val">0.00</span>`;
+    parent.appendChild(row);
+  }
+})();
+
+let fullStatePollId = null;
+
+function connectControl(host) {
+  const url = `ws://${host}:8080/ws/sdk`;
+  ctrlWs = new WebSocket(url);
+  window.ctrlWs = ctrlWs;
+  ctrlWs.onopen = () => {
+    log(`control WS open → ${url}`, "ok");
+    for (const id of CTRL_IDS) $(id).disabled = false;
+    // Poll get_state to keep `lastFullState` fresh — the 100 Hz broadcast
+    // carries present-only, so this is the only source of `target_*` fields
+    // (used by the `tgt=` display and the sinusoid latency xcorr).
+    if (fullStatePollId) clearInterval(fullStatePollId);
+    fullStatePollId = setInterval(() => {
+      if (ctrlWs?.readyState === WebSocket.OPEN) {
+        ctrlWs.send(JSON.stringify({ type: "get_state" }));
+      }
+    }, 20); // 50 Hz — cheap, and sharp enough for latency xcorr
+  };
+  ctrlWs.onclose = () => {
+    log(`control WS closed`);
+    for (const id of CTRL_IDS) $(id).disabled = true;
+    if (fullStatePollId) { clearInterval(fullStatePollId); fullStatePollId = null; }
+    lastFullState = null;
+  };
+  ctrlWs.onerror = () => log(`control WS error`, "err");
+  ctrlWs.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      sensorMsgCount++;
+      switch (msg.type) {
+        case "joint_positions":
+          lastJoint = msg;
+          // Notify SDK module for streaming state display.
+          window._onJointPositions?.(msg);
+          break;
+        case "head_pose":
+          window._onHeadPose?.(msg);
+          break;
+        case "imu_data":        lastImu   = msg; break;
+        case "daemon_status":   lastDaemonStatus = msg; break;
+        case "task_progress":   log(`task ${msg.uuid}: finished=${msg.finished}${msg.error ? " error=" + msg.error : ""}`, "ok"); break;
+        case "error":           log(`server: ${msg.message}`, "err"); break;
+        default:
+          // Per-client responses (status ok, get_state, etc) don't have a type field.
+          // get_state responses arrive as `{ state: {...} }` — cache the target_* fields
+          // so the sinusoid latency sampler and the `tgt=` display can use them.
+          if (msg && msg.state && typeof msg.state === "object") {
+            if (!lastFullState) {
+              console.log("first get_state response:", msg.state);
+            }
+            lastFullState = msg.state;
+          }
+          break;
+      }
+    } catch (e) { log(`bad JSON from control: ${e}`, "err"); }
+  };
+}
+
+function sendCmd(cmd) {
+  if (!ctrlWs || ctrlWs.readyState !== WebSocket.OPEN) {
+    log("control WS not open", "err"); return;
+  }
+  ctrlWs.send(JSON.stringify(cmd));
+  log(`→ ${JSON.stringify(cmd)}`, "tx");
+}
+
+// Refresh state panel + sensor rate twice a second.
+setInterval(() => {
+  const now = performance.now();
+  const dt = (now - lastSensorRate.t) / 1000;
+  const rate = dt > 0 ? ((sensorMsgCount - lastSensorRate.count) / dt).toFixed(1) : "—";
+  lastSensorRate = { t: now, count: sensorMsgCount };
+  const jp = lastJoint
+    ? `head[${lastJoint.head_joint_positions.map(x => x.toFixed(2)).join(", ")}]\n    antennas[${lastJoint.antennas_joint_positions.map(x => x.toFixed(2)).join(", ")}]`
+    : "—";
+  const im = lastImu
+    ? `acc[${lastImu.accelerometer.map(x => x.toFixed(2)).join(", ")}] gyr[${lastImu.gyroscope.map(x => x.toFixed(2)).join(", ")}] T ${lastImu.temperature.toFixed(1)}°C`
+    : "—";
+  $("state").textContent =
+    `rate:   ${rate} msg/s (${sensorMsgCount} total)\n` +
+    `joints: ${jp}\n` +
+    `imu:    ${im}`;
+}, 500);
+
+// ---------- command bindings ----------
+const IDENTITY_HEAD = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+
+$("wake-up").onclick    = () => sendCmd({ type: "wake_up" });
+$("goto-sleep").onclick = () => sendCmd({ type: "goto_sleep" });
+// Note: sending `head` and `head_joints` together is rejected by the
+// daemon (HeadConflict) — pick one. Identity-head maps to neutral pose
+// via kinematics, so that's the right choice for "zero pose".
+$("zero").onclick       = () => sendCmd({
+  type: "set_full_target",
+  head: IDENTITY_HEAD,
+  antennas: [0, 0],
+  body_yaw: 0,
+});
+
+function bindSlider(id, buildCmd, decimals = 2) {
+  const el = $(id), valEl = $(id + "-val");
+  let pending = false;
+  el.oninput = () => {
+    valEl.textContent = (+el.value).toFixed(decimals);
+    // Throttle with rAF so dragging doesn't flood the WS.
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      if (!ctrlWs || ctrlWs.readyState !== WebSocket.OPEN) return;
+      ctrlWs.send(JSON.stringify(buildCmd()));
+    });
+  };
+}
+bindSlider("body-yaw", () => ({ type: "set_full_target", body_yaw: +$("body-yaw").value }));
+bindSlider("ant-r",    () => ({ type: "set_full_target", antennas: [+$("ant-r").value, +$("ant-l").value] }));
+bindSlider("ant-l",    () => ({ type: "set_full_target", antennas: [+$("ant-r").value, +$("ant-l").value] }));
+
+const readHeadPose = () => {
+  const [tx, ty, tz, rx, ry, rz] = HEAD_POSE_IDS.map(id => +$(id).value);
+  return poseToMatrix(tx, ty, tz, rx, ry, rz);
+};
+for (const id of HEAD_POSE_IDS) {
+  bindSlider(id, () => ({ type: "set_full_target", head: readHeadPose() }), 3);
+}
+
+const readHeadJoints = () => HEAD_JOINT_IDS.map(id => +$(id).value);
+for (const id of HEAD_JOINT_IDS) {
+  bindSlider(id, () => ({ type: "set_full_target", head_joints: readHeadJoints() }));
+}
+
+// ---------- connect / disconnect ----------
+$("connect").onclick = async () => {
+  const host = $("host").value.trim();
+  const wantedName = $("meta-name").value.trim();
+  if (!host) return;
+  $("connect").disabled = true;
+  $("disconnect").disabled = false;
+  await connectVideo(host, wantedName);
+  connectControl(host);
+};
+
+$("disconnect").onclick = () => {
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  lastVideoStats = null;
+  $("stats").textContent = "—";
+  if (pc) { pc.close(); pc = null; }
+  if (ws    && ws.readyState    === WebSocket.OPEN) ws.close();
+  if (ctrlWs && ctrlWs.readyState === WebSocket.OPEN) ctrlWs.close();
+  ws = null; ctrlWs = null;
+  sessionId = null; targetProducerId = null;
+  $("video").srcObject = null;
+  $("connect").disabled = false;
+  $("disconnect").disabled = true;
+};
+</script>
+
+<!-- SDK compat: uses the real reachy-mini.js (symlinked from reachy_mini repo) -->
+<script type="module">
+import { rpyToMatrix, matrixToRpy, degToRad, radToDeg } from "./reachy-mini.js";
+
+window._sdk = { rpyToMatrix, matrixToRpy, degToRad, radToDeg };
+
+const $ = (id) => document.getElementById(id);
+
+// --- SDK head pose sliders (degrees) → set_target ---
+function sendSdkHead() {
+  const roll  = +$("sdk-roll").value;
+  const pitch = +$("sdk-pitch").value;
+  const yaw   = +$("sdk-yaw").value;
+  const head = rpyToMatrix(roll, pitch, yaw).flat();
+  if (window.ctrlWs && window.ctrlWs.readyState === WebSocket.OPEN) {
+    window.ctrlWs.send(JSON.stringify({ type: "set_target", head }));
+  }
+}
+
+for (const id of ["sdk-roll", "sdk-pitch", "sdk-yaw"]) {
+  const el = $(id), valEl = $(id + "-val");
+  let pending = false;
+  el.oninput = () => {
+    valEl.textContent = (+el.value).toFixed(1);
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; sendSdkHead(); });
+  };
+}
+
+// --- SDK antenna sliders (degrees) → set_antennas ---
+function sendSdkAntennas() {
+  const r = degToRad(+$("sdk-ant-r").value);
+  const l = degToRad(+$("sdk-ant-l").value);
+  if (window.ctrlWs && window.ctrlWs.readyState === WebSocket.OPEN) {
+    window.ctrlWs.send(JSON.stringify({ type: "set_antennas", antennas: [r, l] }));
+  }
+}
+
+for (const id of ["sdk-ant-r", "sdk-ant-l"]) {
+  const el = $(id), valEl = $(id + "-val");
+  let pending = false;
+  el.oninput = () => {
+    valEl.textContent = (+el.value).toFixed(0);
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; sendSdkAntennas(); });
+  };
+}
+
+// --- Streaming state from broadcast (no polling) ---
+// joint_positions arrives at 100Hz with present + target values.
+// head_pose arrives at 100Hz with the target 4x4.
+// Display throttled to rAF.
+
+let lastJP = null, lastHP = null;
+let displayPending = false;
+
+// Latency sample ring buffer (10s at 100Hz = 1000 samples).
+const LAT_BUF_SIZE = 1000;
+const latBuf = { local: new Float64Array(LAT_BUF_SIZE), target: new Float64Array(LAT_BUF_SIZE), present: new Float64Array(LAT_BUF_SIZE), len: 0, idx: 0 };
+let latStats = null; // computed every 1s
+
+window._onJointPositions = (msg) => {
+  lastJP = msg;
+
+  // Record latency sample when sinusoid is running.
+  // `target` comes from the cached fullState (get_state poller) — the 100 Hz
+  // broadcast carries present-only. A missing cache skips the sample so xcorr
+  // doesn't correlate against all-zero data.
+  if (sinRunning && lastFullState?.target_head_joint_positions) {
+    const t = (performance.now() - sinT0) / 1000;
+    const localVal = sinAmp * Math.sin(2 * Math.PI * sinFreq * t);
+    const tgtVal   = lastFullState.target_head_joint_positions[0] ?? 0;
+    const presVal  = msg.head_joint_positions?.[0] ?? 0;
+    const i = latBuf.idx % LAT_BUF_SIZE;
+    latBuf.local[i]   = localVal;
+    latBuf.target[i]  = tgtVal;
+    latBuf.present[i] = presVal;
+    latBuf.idx++;
+    latBuf.len = Math.min(latBuf.len + 1, LAT_BUF_SIZE);
+  }
+
+  scheduleDisplay();
+};
+window._onHeadPose = (msg) => { lastHP = msg; };
+
+// Compute latency stats every 1s.
+setInterval(() => {
+  if (!sinRunning || latBuf.len < 20) { latStats = null; return; }
+  latStats = computeLatencyStats();
+}, 1000);
+
+function scheduleDisplay() {
+  if (displayPending) return;
+  displayPending = true;
+  requestAnimationFrame(() => { displayPending = false; displayStreamedState(); });
+}
+
+function displayStreamedState() {
+  if (!lastJP) return;
+  const jp = lastJP;
+  const rpy = lastHP?.head_pose ? matrixToRpy(lastHP.head_pose) : null;
+
+  const presYaw = jp.head_joint_positions?.[0];
+  const tgtYaw  = lastFullState?.target_head_joint_positions?.[0];
+  const presAntR = jp.antennas_joint_positions?.[0];
+  const presAntL = jp.antennas_joint_positions?.[1];
+  const tgtAntR  = lastFullState?.target_antennas_joint_positions?.[0];
+  const tgtAntL  = lastFullState?.target_antennas_joint_positions?.[1];
+
+  let lines = [
+    `head:      roll=${f(rpy?.roll)} pitch=${f(rpy?.pitch)} yaw=${f(rpy?.yaw)} (deg)`,
+    `body_yaw:  tgt=${f3(tgtYaw)} pres=${f3(presYaw)} (rad)`,
+    `ant R:     tgt=${f(tgtAntR != null ? radToDeg(tgtAntR) : null)} pres=${f(presAntR != null ? radToDeg(presAntR) : null)} (deg)`,
+    `ant L:     tgt=${f(tgtAntL != null ? radToDeg(tgtAntL) : null)} pres=${f(presAntL != null ? radToDeg(presAntL) : null)} (deg)`,
+  ];
+
+  if (sinRunning && latStats) {
+    const s = latStats;
+    lines.push(`--- sinusoid latency (body_yaw, ${latBuf.len} samples) ---`);
+    lines.push(`network RT:     ${fms(s.rtDelay)} ms  (xcorr over ${f1(latBuf.len / 100)} s)`);
+    lines.push(`motor tracking: ${fms(s.motorDelay)} ms  (xcorr)`);
+    lines.push(`local→target err: mean=${f3(s.rtErr.mean)} min=${f3(s.rtErr.min)} max=${f3(s.rtErr.max)} std=${f3(s.rtErr.std)} rad`);
+    lines.push(`target→present:   mean=${f3(s.motorErr.mean)} min=${f3(s.motorErr.min)} max=${f3(s.motorErr.max)} std=${f3(s.motorErr.std)} rad`);
+  }
+
+  $("sdk-state").textContent = lines.join("\n");
+}
+
+function f(v) { return v != null ? v.toFixed(1) : "?"; }
+function f1(v) { return v != null ? v.toFixed(1) : "?"; }
+function f3(v) { return v != null ? v.toFixed(4) : "?"; }
+function fms(v) { return v != null ? v.toFixed(1) : "?"; }
+
+// --- Cross-correlation delay + error stats ---
+function computeLatencyStats() {
+  const n = latBuf.len;
+  const start = latBuf.idx >= LAT_BUF_SIZE ? latBuf.idx % LAT_BUF_SIZE : 0;
+
+  // Extract ordered arrays from ring buffer.
+  const local = new Float64Array(n), target = new Float64Array(n), present = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const j = (start + i) % LAT_BUF_SIZE;
+    local[i]   = latBuf.local[j];
+    target[i]  = latBuf.target[j];
+    present[i] = latBuf.present[j];
+  }
+
+  // Sample period: 100Hz broadcast = 10ms.
+  const dtMs = 10;
+  const maxLag = Math.min(100, Math.floor(n / 2)); // up to 1s
+
+  const rtLag    = xcorrPeakLag(local, target, maxLag);
+  const motorLag = xcorrPeakLag(target, present, maxLag);
+
+  // Error stats.
+  const rtErr    = errorStats(local, target, n);
+  const motorErr = errorStats(target, present, n);
+
+  return {
+    rtDelay: rtLag * dtMs,
+    motorDelay: motorLag * dtMs,
+    rtErr,
+    motorErr,
+  };
+}
+
+// Find the lag (in samples) by which y is delayed relative to x.
+// Aligns y[i+lag] with x[i], so the return is positive when x leads y.
+function xcorrPeakLag(x, y, maxLag) {
+  const n = x.length;
+  let bestLag = 0, bestR = -Infinity;
+  for (let lag = 0; lag <= maxLag; lag++) {
+    let r = 0;
+    for (let i = 0; i < n - lag; i++) r += x[i] * y[i + lag];
+    if (r > bestR) { bestR = r; bestLag = lag; }
+  }
+  return bestLag;
+}
+
+function errorStats(a, b, n) {
+  let sum = 0, sumSq = 0, mn = Infinity, mx = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const e = Math.abs(a[i] - b[i]);
+    sum += e; sumSq += e * e;
+    if (e < mn) mn = e;
+    if (e > mx) mx = e;
+  }
+  const mean = sum / n;
+  const std = Math.sqrt(sumSq / n - mean * mean);
+  return { mean, min: mn, max: mx, std };
+}
+
+// --- Manual get_state button (still useful for full snapshot) ---
+$("sdk-get-state").onclick = () => {
+  if (!window.ctrlWs || window.ctrlWs.readyState !== WebSocket.OPEN) return;
+  const handler = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (!data.state) return;
+      window.ctrlWs.removeEventListener("message", handler);
+      window.log?.(`get_state: ${JSON.stringify(data.state)}`, "ok");
+    } catch (_) {}
+  };
+  window.ctrlWs.addEventListener("message", handler);
+  window.ctrlWs.send(JSON.stringify({ type: "get_state" }));
+};
+
+// --- wake_up / goto_sleep via REST ---
+$("sdk-wake-up").onclick = async () => {
+  const host = $("host").value.trim();
+  try {
+    const res = await fetch(`http://${host}:8080/api/move/play/wake_up`, { method: "POST" });
+    const data = await res.json();
+    window.log?.(`REST wake_up: ${JSON.stringify(data)}`, "ok");
+  } catch (e) { window.log?.(`REST wake_up error: ${e}`, "err"); }
+};
+
+$("sdk-sleep").onclick = async () => {
+  const host = $("host").value.trim();
+  try {
+    const res = await fetch(`http://${host}:8080/api/move/play/goto_sleep`, { method: "POST" });
+    const data = await res.json();
+    window.log?.(`REST goto_sleep: ${JSON.stringify(data)}`, "ok");
+  } catch (e) { window.log?.(`REST goto_sleep error: ${e}`, "err"); }
+};
+
+// --- Sinusoid generator (body_yaw) ---
+let sinRunning = false, sinTimerId = null, sinT0 = 0;
+let sinFreq = 0.5, sinAmp = 0.3; // Hz, radians
+
+$("sin-start").onclick = () => {
+  sinFreq = +$("sin-freq").value || 0.5;
+  sinAmp  = +$("sin-amp").value  || 0.3;
+  sinT0 = performance.now();
+  sinRunning = true;
+  latBuf.len = 0; latBuf.idx = 0; latStats = null;
+
+  // Send at ~100 Hz (10ms interval).
+  sinTimerId = setInterval(() => {
+    if (!window.ctrlWs || window.ctrlWs.readyState !== WebSocket.OPEN) return;
+    const t = (performance.now() - sinT0) / 1000;
+    const valRad = sinAmp * Math.sin(2 * Math.PI * sinFreq * t);
+    window.ctrlWs.send(JSON.stringify({ type: "set_body_yaw", body_yaw: valRad }));
+  }, 10);
+
+  window.log?.(`sinusoid started: ${sinFreq} Hz, ${sinAmp} rad on body_yaw`, "ok");
+};
+
+$("sin-stop").onclick = () => {
+  sinRunning = false;
+  if (sinTimerId) { clearInterval(sinTimerId); sinTimerId = null; }
+  if (window.ctrlWs && window.ctrlWs.readyState === WebSocket.OPEN) {
+    window.ctrlWs.send(JSON.stringify({ type: "set_body_yaw", body_yaw: 0 }));
+  }
+  window.log?.("sinusoid stopped", "ok");
+};
+
+console.log("reachy-mini.js SDK loaded:", { rpyToMatrix, matrixToRpy, degToRad, radToDeg });
+</script>
+</body>
+</html>
